@@ -409,11 +409,14 @@ mod tests {
         let store = RefCell::new(store);
         barrier.wait().await;
 
-        assert!(store
-            .borrow_mut()
-            .append(id_1, Expected::Exact(0), vec![Event::A])
-            .await
-            .is_ok());
+        #[allow(clippy::await_holding_refcell_ref)]
+        {
+            assert!(store
+                .borrow_mut()
+                .append(id_1, Expected::Exact(0), vec![Event::A])
+                .await
+                .is_ok());
+        }
 
         assert!(store
             .borrow_mut()
