@@ -1,15 +1,16 @@
 //! Contains a different flavour of the [`Aggregate`] trait,
-//! while still maintaining compatibility through [`AsAggregate`] type.
+//! while still maintaining compatibility through [`IntoAggregate`] type.
 //!
 //! Check out [`optional::Aggregate`](Aggregate) for more information.
 
-use futures::future::BoxFuture;
+use async_trait::async_trait;
 
 /// An [`Option`]-flavoured, [`Aggregate`]-compatible trait
 /// to model Aggregates having an optional [`State`](Aggregate::State).
 ///
 /// Use [`as_aggregate`](Aggregate::as_aggregate) to get an
 /// [`Aggregate`]-compatible instance of this trait.
+#[async_trait]
 pub trait Aggregate {
     /// Identifier type of the Aggregate.
     ///
@@ -46,67 +47,63 @@ pub trait Aggregate {
 
     /// Handles the specified [`Command`](Aggregate::Command)when the
     /// [`State`](Aggregate::State) is empty.
-    fn handle_first<'s, 'a: 's>(
-        &'s self,
-        id: &'a Self::Id,
+    async fn handle_first(
+        &self,
+        id: &Self::Id,
         command: Self::Command,
-    ) -> BoxFuture<'s, Result<Option<Vec<Self::Event>>, Self::Error>>
-    where
-        Self: Sized;
+    ) -> Result<Vec<Self::Event>, Self::Error>;
 
     /// Handles the specified [`Command`](Aggregate::Command) on a pre-existing
     /// [`State`](Aggregate::State) value.
-    fn handle_next<'a, 's: 'a>(
-        &'a self,
-        id: &'a Self::Id,
-        state: &'s Self::State,
+    async fn handle_next(
+        &self,
+        id: &Self::Id,
+        state: &Self::State,
         command: Self::Command,
-    ) -> BoxFuture<'a, Result<Option<Vec<Self::Event>>, Self::Error>>
-    where
-        Self: Sized;
+    ) -> Result<Vec<Self::Event>, Self::Error>;
 
     /// Translates the current [`optional::Aggregate`](Aggregate) instance into
     /// a _newtype instance_ compatible with the core
-    /// [`Aggregate`](eventually_core::aggregate::Aggregate) trait.
+    /// [`Aggregate`](crate::aggregate::Aggregate) trait.
     #[inline]
-    fn as_aggregate(self) -> AsAggregate<Self>
+    fn into_aggregate(self) -> IntoAggregate<Self>
     where
         Self: Sized,
     {
-        AsAggregate::from(self)
+        IntoAggregate::from(self)
     }
 }
 
 /// _Newtype pattern_ to ensure compatibility between
 /// [`optional::Aggregate`](Aggregate) trait and the core
-/// [`Aggregate`](eventually_core::aggregate::Aggregate) trait.
+/// [`Aggregate`](crate::aggregate::Aggregate) trait.
 ///
 /// ## Usage
 ///
 /// 1. Use `From<Aggregate>` trait implementation:
 ///     ```text
-///     use eventually_util::optional::AsAggregate;
+///     use eventually_util::optional::IntoAggregate;
 ///
-///     let aggregate = AsAggregate::from(MyOptionalAggregate);
+///     let aggregate = IntoAggregate::from(MyOptionalAggregate);
 ///     ```
 /// 2. Use the [`Aggregate::as_aggregate`] method:
 ///     ```text
 ///     let aggregate = MyOptionalAggregate.as_aggregate();
 ///     ```
 #[derive(Clone)]
-pub struct AsAggregate<A>(A);
+pub struct IntoAggregate<A>(A);
 
-impl<A> From<A> for AsAggregate<A> {
+impl<A> From<A> for IntoAggregate<A> {
     #[inline]
     fn from(value: A) -> Self {
-        AsAggregate(value)
+        IntoAggregate(value)
     }
 }
 
-impl<A> eventually_core::aggregate::Aggregate for AsAggregate<A>
+#[async_trait]
+impl<A> crate::aggregate::Aggregate for IntoAggregate<A>
 where
-    A: Aggregate,
-    A: Send + Sync,
+    A: Aggregate + Send + Sync,
     A::Id: Send + Sync,
     A::Command: Send + Sync,
     A::State: Send + Sync,
@@ -125,18 +122,15 @@ where
         }
     }
 
-    fn handle<'a, 's: 'a>(
-        &'a self,
-        id: &'s Self::Id,
-        state: &'s Self::State,
+    async fn handle(
+        &self,
+        id: &Self::Id,
+        state: &Self::State,
         command: Self::Command,
-    ) -> BoxFuture<'a, Result<Option<Vec<Self::Event>>, Self::Error>>
-    where
-        Self: Sized,
-    {
-        Box::pin(match state {
-            None => self.0.handle_first(id, command),
-            Some(state) => self.0.handle_next(id, state, command),
-        })
+    ) -> Result<Vec<Self::Event>, Self::Error> {
+        match state {
+            None => self.0.handle_first(id, command).await,
+            Some(state) => self.0.handle_next(id, state, command).await,
+        }
     }
 }

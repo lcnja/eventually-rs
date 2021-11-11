@@ -1,21 +1,75 @@
-//! Module for creating and managing long-running Subscriptions
-//! to incoming events in the [`EventStore`].
+//! Module containing support for Subscriptions to Events coming
+//! from the Event Store.
 //!
+//! ## What are Subscriptions?
+//!
+//! Subscriptions, as the name suggest, allows to subscribe to changes
+//! in the Event Store. Essentialy, Subscriptions receive Events
+//! when they get committed to the Store.
+//!
+//! This allows for near real-time processing of multiple things, such as
+//! publishing committed events on a message broker, or running
+//! **projections** (more on that on [`Projection` documentation]).
+//!
+//! ## Subscriptions in `eventually`
+//!
+//! ### `EventSubscriber` trait
+//!
+//! In order to subscribe to Events, `eventually` exposes the
+//! [`EventSubscriber`] trait, usually implemented by [`EventStore`]
+//! implementations.
+//!
+//! An [`EventSubscriber`] opens an _endless_ [`EventStream`], that gets
+//! closed only at application shutdown, or if the stream gets explicitly
+//! dropped.
+//!
+//! The [`EventStream`] receives all the **new Events** committed
+//! to the [`EventStore`].
+//!
+//! ### `Subscription` trait
+//!
+//! The [`Subscription`] trait represent an ongoing subscription
+//! to Events coming from an [`EventStream`], as described above.
+//!
+//! Similarly to the [`EventSubscriber`], a [`Subscription`]
+//! returns an _endless_ stream of Events called [`SubscriptionStream`].
+//!
+//! However, [`Subscription`]s are **stateful**: they save the latest
+//! Event sequence number that has been processed through the
+//! [`SubscriptionStream`], by using the [`checkpoint`] method. Later,
+//! the [`Subscription`] can be restarted from where it was left off
+//! using the [`resume`] method.
+//!
+//! This module exposes a simple [`Subscription`] implementation:
+//! [`Transient`], for in-memory, one-off subscriptions.
+//!
+//! For a long-running [`Subscription`] implementation,
+//! take a look at persisted subscriptions, such as
+//! [`postgres::subscription::Persisted`].
+//!
+//! [`Projection` documentation]: ../trait.Projection.html
+//! [`EventSubscriber`]: trait.EventSubscriber.html
 //! [`EventStore`]: ../store/trait.EventStore.html
+//! [`EventStream`]: type.EventStream.html
+//! [`Subscription`]: trait.Subscription.html
+//! [`SubscriptionStream`]: type.SubscriptionStream.html
+//! [`checkpoint`]: trait.Subscription.html#tymethod.checkpoint
+//! [`resume`]: trait.Subscription.html#tymethod.resume
+//! [`Transient`]: struct.Transient.html
+//! [`postgres::subscription::Persisted`]:
+//! ../postgres/subscription/struct.Persisted.html
 
 use std::error::Error as StdError;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use futures::future::{ok, BoxFuture, FutureExt};
+use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt, TryStreamExt};
+use futures::TryFutureExt;
 
 use crate::store::{EventStore, Persisted, Select};
 
 /// Stream of events returned by the [`EventSubscriber::subscribe_all`] method.
-///
-/// [`EventSubscriber::subscribe_all`]:
-/// trait.EventSubscriber.html#method.subscribe_all
 pub type EventStream<'a, S> = BoxStream<
     'a,
     Result<
@@ -34,19 +88,12 @@ pub type EventStream<'a, S> = BoxStream<
 /// of eventstore.com
 ///
 /// [_Volatile Subscription_]: https://eventstore.com/docs/getting-started/reading-subscribing-events/index.html#volatile-subscriptions
-/// [`EventStore`]: ../store/trait.EventStore.html
 pub trait EventSubscriber {
-    /// Type of the Source id, typically an [`AggregateId`].
-    ///
-    /// [`AggregateId`]: ../aggregate/type.AggregateId.html
+    /// Type of the Source id, typically an [`AggregateId`](super::aggregate::AggregateId).
     type SourceId: Eq;
 
     /// Event type stored in the [`EventStore`], typically an
-    /// [`Aggregate::Event`].
-    ///
-    /// [`Aggregate::Event`]:
-    /// ../aggregate/trait.Aggregate.html#associatedtype.Event
-    /// [`EventStore`]: ../store/trait.EventStore.html
+    /// [`Aggregate::Event`](super::aggregate::Aggregate::Event).
     type Event;
 
     /// Possible errors returned when receiving events from the notification
@@ -68,15 +115,10 @@ pub trait EventSubscriber {
     ///     // Do stuff with the received event...
     /// }
     /// ```
-    ///
-    /// [`EventStore`]: ../store/trait.EventStore.html
-    /// [`EventStream`]: type.EventStream.html
-    fn subscribe_all(&self) -> BoxFuture<Result<EventStream<Self>, Self::Error>>;
+    fn subscribe_all(&self) -> EventStream<Self>;
 }
 
 /// Stream of events returned by the [`Subscription::resume`] method.
-///
-/// [`Subscription::resume`]: trait.Subscription.html#method.resume
 pub type SubscriptionStream<'a, S> = BoxStream<
     'a,
     Result<
@@ -87,24 +129,15 @@ pub type SubscriptionStream<'a, S> = BoxStream<
 
 /// A Subscription to an [`EventStream`] which can be "checkpointed":
 /// keeps a record of the latest message processed by itself using
-/// [`checkpoint`], and can resume working from such message by using the
-/// [`resume`].
-///
-/// [`EventStream`]: type.EventStream.html
-/// [`resume`]: trait.Subscription.html#method.resume
-/// [`checkpoint`]: trait.Subscription.html#method.checkpoint
+/// [`Subscription::checkpoint`], and can resume working from such message by using the
+/// [`Subscription::resume`].
+#[async_trait]
 pub trait Subscription {
-    /// Type of the Source id, typically an [`AggregateId`].
-    ///
-    /// [`AggregateId`]: ../aggregate/type.AggregateId.html
+    /// Type of the Source id, typically an [`AggregateId`](super::aggregate::AggregateId).
     type SourceId: Eq;
 
     /// Event type stored in the [`EventStore`], typically an
-    /// [`Aggregate::Event`].
-    ///
-    /// [`Aggregate::Event`]:
-    /// ../aggregate/trait.Aggregate.html#associatedtype.Event
-    /// [`EventStore`]: ../store/trait.EventStore.html
+    /// [`Aggregate::Event`](super::aggregate::Aggregate::Event).
     type Event;
 
     /// Possible errors returned when receiving events from the notification
@@ -113,30 +146,22 @@ pub trait Subscription {
 
     /// Resumes the current state of a `Subscription` by returning the
     /// [`EventStream`], starting from the last event processed by the
-    /// `Subscription`.
-    ///
-    /// [`EventStream`]: type.EventStream.html
-    fn resume(&self) -> BoxFuture<Result<SubscriptionStream<Self>, Self::Error>>;
+    /// [`Subscription`].
+    fn resume(&self) -> SubscriptionStream<Self>;
 
     /// Saves the provided version (or sequence number) as the latest
     /// version processed.
-    fn checkpoint(&self, version: u32) -> BoxFuture<Result<(), Self::Error>>;
+    async fn checkpoint(&self, version: u32) -> Result<(), Self::Error>;
 }
 
 /// Error type returned by a [`Transient`] Subscription.
-///
-/// [`Transient`]: struct.Transient.html
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Error caused by the Subscription's [`EventStore`].
-    ///
-    /// [`EventStore`]: ../store/trait.EventStore.html
     #[error("error received while listening to the event stream from the store: {0}")]
     Store(#[source] anyhow::Error),
 
     /// Error caused by the Subscription's [`EventSubscriber`].
-    ///
-    /// [`EventSubscriber`]: trait.EventSubscriber.html
     #[error("error received while listening to the event stream subscription: {0}")]
     Subscription(#[source] anyhow::Error),
 }
@@ -144,10 +169,7 @@ pub enum Error {
 /// [`Subscription`] type which gets deleted once the process using it
 /// gets terminated.
 ///
-/// Useful for in-memory or one-off [`Projection`]s.
-///
-/// [`Subscription`]: trait.Subscription.html
-/// [`Projection`]: ../projection/trait.Projection.html
+/// Useful for in-memory or one-off [`Projection`](super::projection::Projection)s.
 pub struct Transient<Store, Subscriber> {
     store: Store,
     subscriber: Subscriber,
@@ -157,24 +179,16 @@ pub struct Transient<Store, Subscriber> {
 impl<Store, Subscriber> Transient<Store, Subscriber> {
     /// Creates a new [`Subscription`] using the specified [`EventStore`]
     /// and [`EventSubscriber`] to create the [`SubscriptionStream`] from.
-    ///
-    /// [`Subscription`]: trait.Subscription.html
-    /// [`EventStore`]: ../store/trait.EventStore.html
-    /// [`EventSubscriber`]: trait.EventSubscriber.html
-    /// [`SubscriptionStream`]: type.SubscriptionStream.html
     pub fn new(store: Store, subscriber: Subscriber) -> Self {
         Self {
             store,
             subscriber,
-            last_sequence_number: Default::default(),
+            last_sequence_number: Arc::default(),
         }
     }
 
     /// Specifies the sequence number of the `Event` the [`SubscriptionStream`]
-    /// should start from when calling [`run`].
-    ///
-    /// [`SubscriptionStream`]: type.SubscriptionStream.html
-    /// [`run`]: struct.Transient.html#method.run
+    /// should start from when calling [`Transient::resume`](Subscription::resume).
     pub fn from(self, sequence_number: u32) -> Self {
         self.last_sequence_number
             .store(sequence_number, Ordering::Relaxed);
@@ -183,6 +197,7 @@ impl<Store, Subscriber> Transient<Store, Subscriber> {
     }
 }
 
+#[async_trait]
 impl<Store, Subscriber> Subscription for Transient<Store, Subscriber>
 where
     Store: EventStore + Send + Sync,
@@ -200,8 +215,8 @@ where
     type Event = Store::Event;
     type Error = Error;
 
-    fn resume(&self) -> BoxFuture<Result<SubscriptionStream<Self>, Self::Error>> {
-        Box::pin(async move {
+    fn resume(&self) -> SubscriptionStream<Self> {
+        let fut = async move {
             // Create the Subscription first, so that once the future has been resolved
             // we'll start receiving events right away.
             //
@@ -212,12 +227,7 @@ where
             // and the subscription stream. Luckily, we can discard those by
             // keeping an internal state of the last processed sequence number,
             // and discard all those events that are found.
-            let subscription = self
-                .subscriber
-                .subscribe_all()
-                .await
-                .map_err(anyhow::Error::from)
-                .map_err(Error::Store)?;
+            let subscription = self.subscriber.subscribe_all();
 
             let one_off_stream = self
                 .store
@@ -254,16 +264,17 @@ where
                     }
 
                     Ok(Some(event))
-                })
-                .boxed();
+                });
 
             Ok(stream)
-        })
+        };
+
+        fut.try_flatten_stream().boxed()
     }
 
-    fn checkpoint(&self, version: u32) -> BoxFuture<Result<(), Self::Error>> {
+    async fn checkpoint(&self, version: u32) -> Result<(), Self::Error> {
         // Checkpointing happens in memory on the atomic sequence number checkpoint.
         self.last_sequence_number.store(version, Ordering::Relaxed);
-        ok(()).boxed()
+        Ok(())
     }
 }

@@ -14,14 +14,21 @@
 //! [`EventStore`]: struct.EventStore.html
 //! [`EventSubscriber`]: struct.EventSubscriber.html
 
+#[deny(
+    clippy::all,
+    missing_docs,
+    unsafe_code,
+    unused_qualifications,
+    trivial_casts
+)]
 mod store;
 mod stream;
 mod subscriber;
 mod subscription;
 
-pub use store::*;
-pub use subscriber::*;
-pub use subscription::*;
+pub use store::EventStore;
+pub use subscriber::EventSubscriber;
+pub use subscription::PersistentSubscription;
 
 use redis::RedisResult;
 

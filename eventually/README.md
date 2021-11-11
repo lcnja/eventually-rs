@@ -21,9 +21,9 @@
         src="https://img.shields.io/github/workflow/status/eventually-rs/eventually-rs/Rust%20(stable)?style=flat-square">
     </a>
     <!-- Codecov -->
-    <a href="https://codecov.io/gh/eventually-rs/eventually-rs">
+    <a href="https://codecov.io/gh/get-eventuallyeventually-rs">
             <img alt="Codecov"
-            src="https://img.shields.io/codecov/c/github/eventually-rs/eventually-rs?style=flat-square">
+            src="https://img.shields.io/codecov/c/github/get-eventually/eventually-rs?style=flat-square">
     </a>
     <!-- Crates.io -->
     <a href="https://crates.io/crates/eventually">
@@ -56,6 +56,8 @@
 
 
 Collection of traits and other utilities to help you build your Event-sourced applications in Rust.
+
+> :warning: **version 0.5.0 is under active develoment**: Breaking changes are expected. If you are using `Eventually` as a git dependency you should use a pinned version.
 
 ## What is Event Sourcing?
 

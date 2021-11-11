@@ -3,18 +3,17 @@
 //! to power the [`EventStream`].
 //!
 //! [`EventSubscriber`]:
-//! ../../eventually-core/subscription/trait.EventSubscriber.html
-//! [`EventStream`]: ../../eventually-core/subscription/type.EventStream.html
+//! ../../eventually/subscription/trait.EventSubscriber.html
+//! [`EventStream`]: ../../eventually/subscription/type.EventStream.html
 
 use std::convert::{TryFrom, TryInto};
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use futures::future::BoxFuture;
 use futures::stream::StreamExt;
 
-use eventually_core::store::Persisted;
-use eventually_core::subscription::EventStream;
+use eventually::store::Persisted;
+use eventually::subscription::EventStream;
 
 use serde::Deserialize;
 
@@ -71,7 +70,7 @@ where
     /// Returns an error if the connection with the Postgres database
     /// could not be established or experienced some issues.
     ///
-    /// [`Aggregate`]: ../../eventually-core/aggregate/trait.Aggregate.html
+    /// [`Aggregate`]: ../../eventually/aggregate/trait.Aggregate.html
     pub async fn new(
         dsn: &str,
         type_name: &str,
@@ -86,7 +85,7 @@ where
 
         let mut stream = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
 
-        eventually_util::spawn(async move {
+        eventually::util::spawn(async move {
             while let Some(event) = stream.next().await {
                 match event {
                     Ok(event) => {
@@ -124,7 +123,7 @@ where
     }
 }
 
-impl<Id, Event> eventually_core::subscription::EventSubscriber for EventSubscriber<Id, Event>
+impl<Id, Event> eventually::subscription::EventSubscriber for EventSubscriber<Id, Event>
 where
     Id: Eq + Send + Sync + Clone + 'static,
     Event: Send + Sync + Clone + 'static,
@@ -133,12 +132,10 @@ where
     type Event = Event;
     type Error = SubscriberError;
 
-    fn subscribe_all(&self) -> BoxFuture<Result<EventStream<Self>>> {
-        Box::pin(async move {
-            Ok(BroadcastStream::new(self.tx.subscribe())
-                .filter_map(|r| async { r.ok() })
-                .boxed())
-        })
+    fn subscribe_all(&self) -> EventStream<Self> {
+        BroadcastStream::new(self.tx.subscribe())
+            .filter_map(|r| async { r.ok() })
+            .boxed()
     }
 }
 

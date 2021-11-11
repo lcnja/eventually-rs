@@ -1,15 +1,16 @@
 //! Contains a persisted implementation of the [`Subscription`] trait
 //! using Postgres as the backend data source for its state.
 //!
-//! [`Subscription`]: ../../eventually-core/subscription/trait.Subscription.html
+//! [`Subscription`]: ../../eventually/subscription/trait.Subscription.html
 
 use std::convert::{TryFrom, TryInto};
 use std::error::Error as StdError;
 use std::fmt::{Debug, Display};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use futures::future::BoxFuture;
+use async_trait::async_trait;
 use futures::stream::{StreamExt, TryStreamExt};
+use futures::TryFutureExt;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,8 +19,8 @@ use bb8_postgres::PostgresConnectionManager;
 use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::Socket;
 
-use eventually_core::store::{EventStore as EventStoreTrait, Select};
-use eventually_core::subscription::{
+use eventually::store::{EventStore as EventStoreTrait, Select};
+use eventually::subscription::{
     EventSubscriber as EventSubscriberTrait, Subscription, SubscriptionStream,
 };
 
@@ -129,7 +130,7 @@ where
 /// Use [`PersistentBuilder`] to create new instances of this type.
 ///
 /// [`PersistentBuilder`]: struct.PersistentBuilder.html
-/// [`Subscription`]: ../../eventually-core/subscription/trait.Subscription.html
+/// [`Subscription`]: ../../eventually/subscription/trait.Subscription.html
 pub struct Persistent<SourceId, Event, Tls>
 where
     Tls: MakeTlsConnect<Socket> + Clone + Send + Sync + 'static,
@@ -144,6 +145,7 @@ where
     subscriber: EventSubscriber<SourceId, Event>,
 }
 
+#[async_trait]
 impl<SourceId, Event, Tls> Subscription for Persistent<SourceId, Event, Tls>
 where
     SourceId: TryFrom<String> + Display + Eq + Clone + Send + Sync + 'static,
@@ -159,7 +161,7 @@ where
     type Event = Event;
     type Error = Error;
 
-    fn resume(&self) -> BoxFuture<Result<SubscriptionStream<Self>, Self::Error>> {
+    fn resume(&self) -> SubscriptionStream<Self> {
         let fut = async move {
             let last_sequence_number = self.last_sequence_number.load(Ordering::Relaxed);
 
@@ -191,11 +193,7 @@ where
             // and the subscription stream. Luckily, we can discard those by
             // keeping an internal state of the last processed sequence number,
             // and discard all those events that are found.
-            let subscription = self
-                .subscriber
-                .subscribe_all()
-                .await
-                .map_err(Error::Subscriber)?;
+            let subscription = self.subscriber.subscribe_all();
 
             let one_off_stream = self
                 .store
@@ -207,7 +205,7 @@ where
                 .map_err(Error::Store)
                 .chain(subscription.map_err(Error::Subscriber))
                 .try_filter_map(move |event| async move {
-                    let event_sequence_number = event.sequence_number() as i64;
+                    let event_sequence_number = i64::from(event.sequence_number());
                     let expected_sequence_number =
                         self.last_sequence_number.load(Ordering::Relaxed);
 
@@ -223,38 +221,35 @@ where
                     }
 
                     Ok(Some(event))
-                })
-                .boxed();
+                });
 
             Ok(stream)
         };
 
-        Box::pin(fut)
+        fut.try_flatten_stream().boxed()
     }
 
-    fn checkpoint(&self, version: u32) -> BoxFuture<Result<(), Self::Error>> {
-        Box::pin(async move {
-            let params: Params = &[&self.name, &self.store.type_name, &(version as i64)];
+    async fn checkpoint(&self, version: u32) -> Result<(), Self::Error> {
+        let params: Params = &[&self.name, &self.store.type_name, &(i64::from(version))];
 
-            #[cfg(feature = "with-tracing")]
-            tracing::trace!(
-                checkpoint = version,
-                subscription.name = %self.name,
-                subscription.aggregate_type = %self.store.type_name,
-                "Checkpointing persistent subscription"
-            );
+        #[cfg(feature = "with-tracing")]
+        tracing::trace!(
+            checkpoint = version,
+            subscription.name = %self.name,
+            subscription.aggregate_type = %self.store.type_name,
+            "Checkpointing persistent subscription"
+        );
 
-            let client = self.pool.get().await.map_err(Error::Checkpoint)?;
-            client
-                .execute(CHECKPOINT_SUBSCRIPTION, params)
-                .await
-                .map_err(bb8::RunError::User)
-                .map_err(Error::Checkpoint)?;
+        let client = self.pool.get().await.map_err(Error::Checkpoint)?;
+        client
+            .execute(CHECKPOINT_SUBSCRIPTION, params)
+            .await
+            .map_err(bb8::RunError::User)
+            .map_err(Error::Checkpoint)?;
 
-            self.last_sequence_number
-                .store(version as i64, Ordering::Relaxed);
+        self.last_sequence_number
+            .store(i64::from(version), Ordering::Relaxed);
 
-            Ok(())
-        })
+        Ok(())
     }
 }

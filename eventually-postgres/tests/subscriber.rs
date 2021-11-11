@@ -1,5 +1,5 @@
-use eventually_core::store::{EventStore, Expected, Persisted};
-use eventually_core::subscription::{EventSubscriber as EventSubscriberTrait, Subscription};
+use eventually::store::{EventStore, Expected, Persisted};
+use eventually::subscription::{EventSubscriber as EventSubscriberTrait, Subscription};
 use eventually_postgres::{EventStoreBuilder, EventSubscriber, PersistentBuilder};
 
 use futures::stream::{StreamExt, TryStreamExt};
@@ -50,10 +50,7 @@ async fn subscribe_all_works() {
         .await
         .expect("failed to create event subscription");
 
-    let mut subscription = event_subscriber
-        .subscribe_all()
-        .await
-        .expect("failed to create subscription from event subscriber");
+    let mut subscription = event_subscriber.subscribe_all();
 
     event_store
         .append(
@@ -153,8 +150,6 @@ async fn persistent_subscription_works() {
 
     let events: Vec<Persisted<String, Event>> = subscription
         .resume()
-        .await
-        .expect("failed to resume subscription")
         .take(3)
         .try_collect()
         .await

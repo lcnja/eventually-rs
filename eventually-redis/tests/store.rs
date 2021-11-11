@@ -3,10 +3,11 @@ use std::sync::Arc;
 use eventually::inmemory::Projector;
 use eventually::store::{Expected, Persisted, Select};
 use eventually::sync::RwLock;
-use eventually::{EventStore, EventSubscriber, Projection};
+use eventually::{projection::Projection, subscription::EventSubscriber, EventStore};
 use eventually_redis::{Builder, EventStore as RedisEventStore};
 
-use futures::future::BoxFuture;
+use async_trait::async_trait;
+
 use futures::stream::TryStreamExt;
 
 use serde::{Deserialize, Serialize};
@@ -39,8 +40,6 @@ async fn it_works() {
         builder_clone
             .build_subscriber::<String, Event>()
             .subscribe_all()
-            .await
-            .unwrap()
             .try_for_each(|_event| async { Ok(()) })
             .await
             .unwrap();
@@ -141,19 +140,19 @@ async fn it_creates_persistent_subscription_successfully() {
     // Create a counter projection of the number of events received.
     #[derive(Debug, Default)]
     struct Counter(usize);
+
+    #[async_trait]
     impl Projection for Counter {
         type SourceId = String;
         type Event = Event;
         type Error = std::convert::Infallible;
 
-        fn project(
+        async fn project(
             &mut self,
             _event: Persisted<Self::SourceId, Self::Event>,
-        ) -> BoxFuture<Result<(), Self::Error>> {
-            Box::pin(async move {
-                self.0 += 1;
-                Ok(())
-            })
+        ) -> Result<(), Self::Error> {
+            self.0 += 1;
+            Ok(())
         }
     }
 

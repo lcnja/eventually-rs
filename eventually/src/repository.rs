@@ -1,15 +1,36 @@
-//! Contains the [Repository pattern] implementation for [`AggregateRoot`]
-//! instances.
+//! Module containing Repository implementation to retrieve,
+//! save and delete Aggregates.
 //!
-//! Check out [`Repository`] for more information.
+//! ## Repository and Aggregates
 //!
-//! [Repository pattern]: https://docs.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design#the-repository-pattern
+//! As described in the [Interacting with Aggregates using `AggregateRoot`]
+//! section in the `aggregate` module-level documentation, in order to
+//! interact with an Aggregate instance you need to use an
+//! [`AggregateRoot`].
+//!
+//! To get an [`AggregateRoot`], you can use a [`Repository`] instance.
+//!
+//! The [`Repository`] allows to **retrieve**, **save** and **remove**
+//! specific Aggregate instances, by using an underlying [`EventStore`]
+//! implementation that handles the Aggregate's events.
+//!
+//! A [`Repository`] will **always** return an [`AggregateRoot`] instance
+//! on read, whether or not events are present in the [`EventStore`].
+//!
+//! Use the [`Repository`] to implement your bounded-context application
+//! logic, for example in HTTP or RPC handlers.
+//!
+//! [Interacting with Aggregates using `AggregateRoot`]:
+//! ../aggregate/index.html#interacting-with-aggregates-using-aggregateroot
+//! [`AggregateRoot`]: ../aggregate/struct.AggregateRoot.html
+//! [`Repository`]: struct.Repository.html
+//! [`EventStore`]: ../store/trait.EventStore.html
 
 use std::fmt::Debug;
 
 use futures::stream::TryStreamExt;
 
-use crate::aggregate::{Aggregate, AggregateRoot, AggregateRootBuilder};
+use crate::aggregate::{Aggregate, AggregateRoot, AggregateRootFactory};
 use crate::store::{EventStore, Expected, Select};
 use crate::versioning::Versioned;
 
@@ -58,7 +79,7 @@ where
     T: Aggregate + Clone + 'static,
     Store: EventStore<SourceId = T::Id, Event = T::Event>,
 {
-    builder: AggregateRootBuilder<T>,
+    factory: AggregateRootFactory<T>,
     store: Store,
 }
 
@@ -73,8 +94,8 @@ where
     /// [`EventStore`]: ../store/trait.EventStore.html
     /// [`Aggregate`]: ../aggregate/trait.Aggregate.html
     #[inline]
-    pub fn new(builder: AggregateRootBuilder<T>, store: Store) -> Self {
-        Repository { builder, store }
+    pub fn new(factory: AggregateRootFactory<T>, store: Store) -> Self {
+        Repository { factory, store }
     }
 }
 
@@ -123,7 +144,7 @@ where
             .await
             // ...and map the State to a new AggregateRoot only if there is
             // at least one Event coming from the Event Stream.
-            .map(|(version, state)| self.builder.build_with_state(id, version, state))
+            .map(|(version, state)| self.factory.build_with_state(id, version, state))
     }
 
     /// Adds a new [`State`] of the [`Aggregate`] into the `Repository`,
@@ -143,18 +164,16 @@ where
     )]
     pub async fn add(&mut self, mut root: AggregateRoot<T>) -> Result<AggregateRoot<T>, T, Store> {
         let mut version = root.version();
-        let events_to_commit = root.take_events_to_commit();
+        let events = root.take_events_to_commit();
 
-        if let Some(events) = events_to_commit {
-            if !events.is_empty() {
-                // Version is incremented at each events flush by the EventStore.
-                version = self
-                    .store
-                    .append(root.id().clone(), Expected::Exact(version), events)
-                    .await
-                    .map_err(Error::Store)?;
-            }
+        if events.is_empty() {
+            return Ok(root);
         }
+        version = self
+            .store
+            .append(root.id().clone(), Expected::Exact(version), events)
+            .await
+            .map_err(Error::Store)?;
 
         Ok(root.with_version(version))
     }

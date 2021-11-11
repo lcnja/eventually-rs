@@ -1,14 +1,13 @@
 //! Contains an [`EventStore`] implementation using PostgreSQL
 //! as a backend data store.
 //!
-//! [`EventStore`]: ../../eventually-core/store/trait.EventStore.html
+//! [`EventStore`]: ../../eventually/store/trait.EventStore.html
 
 use std::convert::TryFrom;
 use std::fmt::{Debug, Display};
-use std::ops::DerefMut;
 
-use eventually_core::aggregate::{Aggregate, AggregateId};
-use eventually_core::store::{AppendError, EventStream, Expected, Persisted, Select};
+use eventually::aggregate::{Aggregate, AggregateId};
+use eventually::store::{AppendError, EventStream, Expected, Persisted, Select};
 
 use futures::future::BoxFuture;
 use futures::stream::{StreamExt, TryStreamExt};
@@ -129,7 +128,7 @@ impl EventStoreBuilder {
     {
         let mut connection = pool.get().await?;
         embedded::migrations::runner()
-            .run_async(connection.deref_mut())
+            .run_async(&mut *connection)
             .await?;
 
         Ok(Self { inner: () })
@@ -251,7 +250,7 @@ where
     payload: std::marker::PhantomData<Event>,
 }
 
-impl<Id, Event, Tls> eventually_core::store::EventStore for EventStore<Id, Event, Tls>
+impl<Id, Event, Tls> eventually::store::EventStore for EventStore<Id, Event, Tls>
 where
     Id: TryFrom<String> + Display + Eq + Send + Sync,
     // This bound is for the translation into an anyhow::Error.
@@ -290,7 +289,7 @@ where
                 .map_err(Error::EncodeEvents)?;
 
             let (version, check) = match version {
-                Expected::Any => (0i32, false),
+                Expected::Any => (0_i32, false),
                 Expected::Exact(v) => (v as i32, true),
             };
 
@@ -325,7 +324,7 @@ where
 
         let fut = async move {
             let from = match select {
-                Select::All => 0i32,
+                Select::All => 0_i32,
                 Select::From(v) => v as i32,
             };
 
@@ -351,8 +350,8 @@ where
 
         let fut = async move {
             let from = match select {
-                Select::All => 0i64,
-                Select::From(v) => v as i64,
+                Select::All => 0_i64,
+                Select::From(v) => i64::from(v),
             };
 
             let params: Params = &[&self.type_name, &from];

@@ -46,13 +46,20 @@
 //! [`eventually`]: https://docs.rs/eventually
 //! [`EventStore`]: struct.EventStore.html
 
+#[deny(
+    clippy::all,
+    missing_docs,
+    unsafe_code,
+    unused_qualifications,
+    trivial_casts
+)]
 pub mod store;
 pub mod subscriber;
 pub mod subscription;
 
-pub use store::*;
-pub use subscriber::*;
-pub use subscription::*;
+pub use store::{EventStore, EventStoreBuilder};
+pub use subscriber::EventSubscriber;
+pub use subscription::PersistentBuilder;
 
 use tokio_postgres::types::ToSql;
 

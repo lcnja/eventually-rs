@@ -6,11 +6,11 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use eventually_core::aggregate::Aggregate;
-use eventually_core::store::persistent::EventBuilderWithVersion;
-use eventually_core::store::{AppendError, EventStream, Expected, Persisted, Select};
-use eventually_core::subscription::EventSubscriber;
-use eventually_core::versioning::Versioned;
+use crate::aggregate::Aggregate;
+use crate::store::persistent::EventBuilderWithVersion;
+use crate::store::{AppendError, EventStream, Expected, Persisted, Select};
+use crate::subscription::EventSubscriber;
+use crate::versioning::Versioned;
 
 use futures::future::BoxFuture;
 use futures::stream::{empty, iter, StreamExt, TryStreamExt};
@@ -26,7 +26,7 @@ use tracing_futures::Instrument;
 const SUBSCRIBE_CHANNEL_DEFAULT_CAP: usize = 128;
 
 /// Error returned by the
-/// [`EventStore::append`](eventually_core::store::EventStore) when a conflict
+/// [`EventStore::append`](crate::store::EventStore) when a conflict
 /// has been detected.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("conflicting versions, expected {expected}, got instead {actual}")]
@@ -63,9 +63,11 @@ impl EventStoreBuilder {
         T::Id: Hash + Eq + Clone,
         T::Event: Clone,
     {
-        Default::default()
+        EventStore::default()
     }
 }
+
+type Backend<Id, Event> = HashMap<Id, Vec<Persisted<Id, Event>>>;
 
 /// An in-memory [`EventStore`] implementation, backed by an [`HashMap`].
 #[derive(Debug, Clone)]
@@ -75,7 +77,7 @@ where
 {
     global_offset: Arc<AtomicU32>,
     tx: Sender<Persisted<Id, Event>>,
-    backend: Arc<RwLock<HashMap<Id, Vec<Persisted<Id, Event>>>>>,
+    backend: Arc<RwLock<Backend<Id, Event>>>,
 }
 
 impl<Id, Event> EventStore<Id, Event>
@@ -83,10 +85,10 @@ where
     Id: Hash + Eq + Clone,
     Event: Clone,
 {
-    /// Creates a new EventStore with a specified in-memory broadcast channel
+    /// Creates a new [`EventStore`] with a specified in-memory broadcast channel
     /// size, which will used by the
     /// [`subscribe_all`](EventSubscriber::subscribe_all) method to notify
-    /// of newly [`EventStore::append`](eventually_core::store::EventStore)
+    /// of newly [`EventStore::append`](crate::store::EventStore)
     /// events.
     pub fn new(subscribe_capacity: usize) -> Self {
         // Use this broadcast channel to send append events to
@@ -121,27 +123,22 @@ where
     type Event = Event;
     type Error = LaggedError;
 
-    fn subscribe_all(
-        &self,
-    ) -> BoxFuture<Result<eventually_core::subscription::EventStream<Self>, Self::Error>> {
+    fn subscribe_all(&self) -> crate::subscription::EventStream<Self> {
         // Create a new Receiver from the store Sender.
         //
         // This receiver implements the TryStream trait, which works perfectly
         // with the definition of the EventStream.
         let rx = self.tx.subscribe();
 
-        Box::pin(async move {
-            let stream = BroadcastStream::new(rx);
-            Ok(stream
-                .map_err(|v| match v {
-                    BroadcastStreamRecvError::Lagged(n) => LaggedError(n),
-                })
-                .boxed())
-        })
+        BroadcastStream::new(rx)
+            .map_err(|v| match v {
+                BroadcastStreamRecvError::Lagged(n) => LaggedError(n),
+            })
+            .boxed()
     }
 }
 
-impl<Id, Event> eventually_core::store::EventStore for EventStore<Id, Event>
+impl<Id, Event> crate::store::EventStore for EventStore<Id, Event>
 where
     Id: Hash + Eq + Sync + Send + Debug + Clone,
     Event: Sync + Send + Debug + Clone,
@@ -170,8 +167,7 @@ where
                 .read()
                 .get(&id)
                 .and_then(|events| events.last())
-                .map(|event| event.version())
-                .unwrap_or(0);
+                .map_or(0, Versioned::version);
 
             if let Expected::Exact(actual) = version {
                 if expected != actual {
@@ -191,10 +187,7 @@ where
             // Copy of the events for broadcasting.
             let broadcast_copy = persisted_events.clone();
 
-            let last_version = persisted_events
-                .last()
-                .map(Persisted::version)
-                .unwrap_or(expected);
+            let last_version = persisted_events.last().map_or(expected, Persisted::version);
 
             self.backend
                 .write()
@@ -210,9 +203,9 @@ where
             #[allow(unused_must_use)]
             {
                 // Broadcast events into the store's Sender channel.
-                broadcast_copy.into_iter().for_each(|event| {
+                for event in broadcast_copy {
                     self.tx.send(event);
-                });
+                }
             }
 
             Ok(last_version)
@@ -281,7 +274,7 @@ where
             .collect();
 
         // Events must be sorted by the sequence number when using $all.
-        events.sort_by_key(|a| a.sequence_number());
+        events.sort_by_key(Persisted::sequence_number);
 
         let fut = futures::future::ok(iter(events).map(Ok).boxed());
 
@@ -333,8 +326,8 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::Arc;
 
-    use eventually_core::store::{EventStore, Expected, Persisted, Select};
-    use eventually_core::subscription::EventSubscriber;
+    use crate::store::{EventStore, Expected, Persisted, Select};
+    use crate::subscription::EventSubscriber;
 
     use futures::{StreamExt, TryStreamExt};
 
@@ -363,7 +356,7 @@ mod tests {
 
         // First subscription.
         let join_handle_1 = tokio::spawn(async move {
-            let mut events = store_1.subscribe_all().await.unwrap().enumerate();
+            let mut events = store_1.subscribe_all().enumerate();
             barrier_1.wait().await;
 
             while let Some((i, res)) = events.next().await {
@@ -433,7 +426,7 @@ mod tests {
         // Second subscriber, it will only see events of the second batch,
         // which is when it started listening to events.
         let join_handle_2 = tokio::spawn(async move {
-            let mut events = store_2.subscribe_all().await.unwrap().enumerate();
+            let mut events = store_2.subscribe_all().enumerate();
             barrier_2.wait().await;
 
             while let Some((i, res)) = events.next().await {

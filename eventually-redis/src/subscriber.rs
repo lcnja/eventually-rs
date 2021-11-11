@@ -4,17 +4,12 @@ use std::fmt::Debug;
 use eventually::store::Persisted;
 use eventually::subscription::EventStream as SubscriberEventStream;
 
-use futures::future::BoxFuture;
 use futures::stream::{StreamExt, TryStreamExt};
+use futures::TryFutureExt;
 
 use redis::RedisError;
 
 use serde::Deserialize;
-
-/// Result returning the crate [`SubscriberError`] type.
-///
-/// [`SubscriberError`]: enum.Error.html
-pub type SubscriberResult<T> = Result<T, SubscriberError>;
 
 /// Error types returned by the [`eventually::EventSubscriber`] implementation
 /// on the [`EventSubscriber`] type.
@@ -61,18 +56,17 @@ pub struct EventSubscriber<Id, Event> {
     pub(crate) event: std::marker::PhantomData<Event>,
 }
 
-impl<Id, Event> eventually::EventSubscriber for EventSubscriber<Id, Event>
+impl<Id, Event> eventually::subscription::EventSubscriber for EventSubscriber<Id, Event>
 where
     Id: TryFrom<String> + Eq + Send + Sync,
     <Id as TryFrom<String>>::Error: std::error::Error + Send + Sync + 'static,
-    Event: Send + Sync,
-    for<'de> Event: Deserialize<'de>,
+    for<'de> Event: Deserialize<'de> + Send + Sync,
 {
     type SourceId = Id;
     type Event = Event;
     type Error = SubscriberError;
 
-    fn subscribe_all(&self) -> BoxFuture<SubscriberResult<SubscriberEventStream<Self>>> {
+    fn subscribe_all(&self) -> SubscriberEventStream<Self> {
         #[derive(Deserialize)]
         struct SubscribeMessage<Event> {
             source_id: String,
@@ -109,10 +103,9 @@ where
                     Ok(Persisted::from(source_id, msg.event)
                         .sequence_number(msg.sequence_number)
                         .version(msg.version))
-                })
-                .boxed())
+                }))
         };
 
-        Box::pin(fut)
+        fut.try_flatten_stream().boxed()
     }
 }
